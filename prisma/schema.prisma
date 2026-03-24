@@ -1,0 +1,106 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Client {
+  id            String   @id @default(cuid())
+  name          String
+  email         String?
+  age           Int
+  gender        String   // male, female
+  weightKg      Float
+  heightCm      Float
+  bodyFatPct    Float?
+  activityLevel String   // sedentary, light, moderate, active, very_active
+  goal          String   // lose_fat, maintain, build_muscle
+  budgetZAR     Float    // weekly food budget in Rands
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  mealPlans    MealPlan[]
+  groceryLists GroceryList[]
+}
+
+model Food {
+  id              String  @id @default(cuid())
+  name            String
+  category        String  // protein, carb, fat, vegetable, fruit, dairy, pantry
+  proteinPer100g  Float
+  carbsPer100g    Float
+  fatPer100g      Float
+  caloriesPer100g Float
+  pricePerKg      Float   // price in ZAR per kg
+  unit            String  @default("kg") // kg, litre, each
+  store           String? // e.g. Shoprite, Checkers, Pick n Pay
+  isAffordable    Boolean @default(true)
+  isPremium       Boolean @default(false)
+
+  groceryItems GroceryItem[]
+  mealFoods    MealFood[]
+}
+
+model GroceryList {
+  id         String   @id @default(cuid())
+  clientId   String
+  weekStart  DateTime
+  totalCost  Float
+  budgetZAR  Float
+  createdAt  DateTime @default(now())
+
+  client Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  items  GroceryItem[]
+  mealPlan MealPlan?
+}
+
+model GroceryItem {
+  id            String @id @default(cuid())
+  groceryListId String
+  foodId        String
+  quantityKg    Float
+  cost          Float
+
+  groceryList GroceryList @relation(fields: [groceryListId], references: [id], onDelete: Cascade)
+  food        Food        @relation(fields: [foodId], references: [id])
+}
+
+model MealPlan {
+  id            String   @id @default(cuid())
+  clientId      String
+  groceryListId String   @unique
+  weekStart     DateTime
+  dailyCalories Float
+  dailyProtein  Float
+  dailyCarbs    Float
+  dailyFat      Float
+  createdAt     DateTime @default(now())
+
+  client      Client      @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  groceryList GroceryList @relation(fields: [groceryListId], references: [id], onDelete: Cascade)
+  meals       Meal[]
+}
+
+model Meal {
+  id         String @id @default(cuid())
+  mealPlanId String
+  dayOfWeek  Int    // 1-7
+  mealType   String // breakfast, snack1, lunch, snack2, dinner
+  name       String
+
+  mealPlan MealPlan   @relation(fields: [mealPlanId], references: [id], onDelete: Cascade)
+  foods    MealFood[]
+}
+
+model MealFood {
+  id       String @id @default(cuid())
+  mealId   String
+  foodId   String
+  quantity Float  // in grams
+
+  meal Meal @relation(fields: [mealId], references: [id], onDelete: Cascade)
+  food Food @relation(fields: [foodId], references: [id])
+}

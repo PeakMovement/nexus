@@ -9,6 +9,9 @@
     "lint": "eslint",
     "db:seed": "npx tsx scripts/seed.ts"
   },
+  "engines": {
+    "node": ">=20.9.0"
+  },
   "dependencies": {
     "dotenv": "^17.3.1",
     "jspdf": "^4.2.1",

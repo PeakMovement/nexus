@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { prisma } from "@/lib/db";
 
+export const dynamic = "force-dynamic";
+
 const GOAL_LABELS: Record<string, string> = {
   lose_fat: "Fat Loss",
   maintain: "Maintain",

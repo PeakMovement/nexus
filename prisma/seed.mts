@@ -65,7 +65,7 @@ const foods = [
   { name: "Baked Beans (tinned)", category: "pantry", proteinPer100g: 5, carbsPer100g: 16, fatPer100g: 0.5, caloriesPer100g: 94, pricePerKg: 22, store: "Shoprite", isAffordable: true, isPremium: false },
 ];
 
-async function main() {
+async function seed() {
   console.log("Seeding food database...");
   await prisma.food.deleteMany();
 
@@ -90,7 +90,7 @@ async function main() {
   console.log(`Seeded ${foods.length} food items.`);
 }
 
-main()
+seed()
   .catch((e) => {
     console.error(e);
     process.exit(1);

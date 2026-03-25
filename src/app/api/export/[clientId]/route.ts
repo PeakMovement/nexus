@@ -1,25 +1,16 @@
 import { NextRequest } from "next/server";
-import { prisma } from "@/lib/db";
+import { query } from "@/lib/db";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
 const DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const MEAL_LABELS: Record<string, string> = {
-  breakfast: "Breakfast",
-  snack1: "AM Snack",
-  lunch: "Lunch",
-  snack2: "PM Snack",
-  dinner: "Dinner",
+  breakfast: "Breakfast", snack1: "AM Snack", lunch: "Lunch", snack2: "PM Snack", dinner: "Dinner",
 };
 const MEAL_ORDER = ["breakfast", "snack1", "lunch", "snack2", "dinner"];
 const CATEGORY_LABELS: Record<string, string> = {
-  protein: "Proteins",
-  carb: "Carbs & Grains",
-  fat: "Fats & Oils",
-  vegetable: "Vegetables",
-  fruit: "Fruit",
-  dairy: "Dairy",
-  pantry: "Pantry",
+  protein: "Proteins", carb: "Carbs & Grains", fat: "Fats & Oils",
+  vegetable: "Vegetables", fruit: "Fruit", dairy: "Dairy", pantry: "Pantry",
 };
 
 export async function GET(
@@ -31,283 +22,109 @@ export async function GET(
   const type = searchParams.get("type");
   const planId = searchParams.get("planId");
 
-  if (!type || !planId) {
-    return new Response("Missing type or planId", { status: 400 });
-  }
+  if (!type || !planId) return new Response("Missing type or planId", { status: 400 });
 
-  const plan = await prisma.mealPlan.findUnique({
-    where: { id: planId },
-    include: {
-      client: true,
-      meals: {
-        include: { foods: { include: { food: true } } },
-        orderBy: [{ dayOfWeek: "asc" }],
-      },
-      groceryList: {
-        include: { items: { include: { food: true } } },
-      },
-    },
-  });
-
-  if (!plan || plan.clientId !== clientId) {
-    return new Response("Not found", { status: 404 });
-  }
+  const planRes = await query(
+    `SELECT mp.*, c.name as client_name FROM meal_plans mp
+     JOIN clients c ON c.id = mp.client_id WHERE mp.id=$1 AND mp.client_id=$2`,
+    [planId, clientId]
+  );
+  if (planRes.rows.length === 0) return new Response("Not found", { status: 404 });
+  const plan = planRes.rows[0];
 
   const doc = new jsPDF();
 
   if (type === "mealplan") {
-    generateMealPlanPDF(doc, plan);
+    const mealsRes = await query(
+      `SELECT m.*, mf.quantity, f.name as food_name, f.calories_per_100g
+       FROM meals m LEFT JOIN meal_foods mf ON mf.meal_id = m.id
+       LEFT JOIN foods f ON f.id = mf.food_id
+       WHERE m.meal_plan_id=$1 ORDER BY m.day_of_week, m.meal_type`,
+      [planId]
+    );
+
+    // Group meals
+    const mealsByDay = new Map<number, Map<string, { name: string; mealType: string; foods: { name: string; qty: number; cals: number }[] }>>();
+    for (const row of mealsRes.rows) {
+      if (!mealsByDay.has(row.day_of_week)) mealsByDay.set(row.day_of_week, new Map());
+      const d = mealsByDay.get(row.day_of_week)!;
+      if (!d.has(row.id)) d.set(row.id, { name: row.name, mealType: row.meal_type, foods: [] });
+      if (row.food_name) d.get(row.id)!.foods.push({ name: row.food_name, qty: row.quantity, cals: (row.calories_per_100g * row.quantity) / 100 });
+    }
+
+    doc.setFontSize(20); doc.setTextColor(5, 150, 105); doc.text("NutriPlan SA", 14, 20);
+    doc.setFontSize(16); doc.setTextColor(30, 30, 30); doc.text(`Weekly Meal Plan - ${plan.client_name}`, 14, 32);
+    doc.setFontSize(10); doc.setTextColor(100, 100, 100);
+    doc.text(`Week of ${new Date(plan.week_start).toLocaleDateString("en-ZA", { day: "numeric", month: "long", year: "numeric" })}`, 14, 40);
+    doc.setFontSize(11); doc.setTextColor(30, 30, 30);
+    doc.text(`Daily Targets: ${plan.daily_calories} kcal | Protein: ${plan.daily_protein}g | Carbs: ${plan.daily_carbs}g | Fat: ${plan.daily_fat}g`, 14, 50);
+
+    let startY = 58;
+    for (let day = 1; day <= 7; day++) {
+      const dayMeals = Array.from(mealsByDay.get(day)?.values() || []).sort((a, b) => MEAL_ORDER.indexOf(a.mealType) - MEAL_ORDER.indexOf(b.mealType));
+      if (dayMeals.length === 0) continue;
+      const tableData = dayMeals.map((m) => [
+        MEAL_LABELS[m.mealType] || m.mealType, m.name,
+        m.foods.map((f) => `${f.name} (${Math.round(f.qty)}g)`).join(", "),
+        `${Math.round(m.foods.reduce((s, f) => s + f.cals, 0))}`,
+      ]);
+      if (startY > 250) { doc.addPage(); startY = 20; }
+      doc.setFontSize(12); doc.setTextColor(5, 150, 105); doc.text(DAY_NAMES[day - 1], 14, startY); startY += 2;
+      autoTable(doc, {
+        startY, head: [["Meal", "Description", "Foods", "kcal"]], body: tableData, theme: "grid",
+        headStyles: { fillColor: [5, 150, 105], fontSize: 8 }, bodyStyles: { fontSize: 7 },
+        columnStyles: { 0: { cellWidth: 25 }, 1: { cellWidth: 35 }, 2: { cellWidth: 100 }, 3: { cellWidth: 18 } },
+        margin: { left: 14 },
+      });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      startY = (doc as any).lastAutoTable.finalY + 8;
+    }
   } else if (type === "grocery") {
-    generateGroceryPDF(doc, plan);
+    const glRes = await query("SELECT * FROM grocery_lists WHERE id=$1", [plan.grocery_list_id]);
+    if (glRes.rows.length === 0) return new Response("Not found", { status: 404 });
+    const gl = glRes.rows[0];
+
+    const itemsRes = await query(
+      `SELECT gi.*, f.name as food_name, f.category, f.unit, f.store
+       FROM grocery_items gi JOIN foods f ON f.id = gi.food_id WHERE gi.grocery_list_id=$1`, [gl.id]
+    );
+
+    doc.setFontSize(20); doc.setTextColor(5, 150, 105); doc.text("NutriPlan SA", 14, 20);
+    doc.setFontSize(16); doc.setTextColor(30, 30, 30); doc.text(`Grocery List - ${plan.client_name}`, 14, 32);
+    doc.setFontSize(10); doc.setTextColor(100, 100, 100);
+    doc.text(`Week of ${new Date(plan.week_start).toLocaleDateString("en-ZA", { day: "numeric", month: "long", year: "numeric" })}`, 14, 40);
+    doc.setFontSize(11); doc.setTextColor(30, 30, 30);
+    doc.text(`Budget: R${Number(gl.budget_zar).toFixed(0)} | Total: R${Number(gl.total_cost).toFixed(2)} | ${gl.budget_zar >= gl.total_cost ? "Under" : "Over"} Budget: R${Math.abs(gl.budget_zar - gl.total_cost).toFixed(2)}`, 14, 50);
+
+    const grouped = new Map<string, typeof itemsRes.rows>();
+    for (const item of itemsRes.rows) { const g = grouped.get(item.category) || []; g.push(item); grouped.set(item.category, g); }
+
+    const tableData: string[][] = [];
+    for (const [cat, items] of grouped) {
+      tableData.push([CATEGORY_LABELS[cat] || cat, "", "", ""]);
+      for (const item of items) {
+        const qty = Number(item.quantity_kg) >= 1 ? `${Number(item.quantity_kg).toFixed(1)} ${item.unit}` : `${Math.round(Number(item.quantity_kg) * 1000)}g`;
+        tableData.push([item.food_name, item.store || "", qty, `R${Number(item.cost).toFixed(2)}`]);
+      }
+    }
+    tableData.push(["TOTAL", "", "", `R${Number(gl.total_cost).toFixed(2)}`]);
+
+    autoTable(doc, {
+      startY: 58, head: [["Item", "Store", "Quantity", "Cost"]], body: tableData, theme: "grid",
+      headStyles: { fillColor: [5, 150, 105], fontSize: 9 }, bodyStyles: { fontSize: 8 },
+      columnStyles: { 0: { cellWidth: 65 }, 1: { cellWidth: 35 }, 2: { cellWidth: 35 }, 3: { cellWidth: 30 } },
+      margin: { left: 14 },
+    });
   } else {
     return new Response("Invalid type", { status: 400 });
   }
 
   const pdfBytes = doc.output("arraybuffer");
-  const filename =
-    type === "mealplan"
-      ? `meal-plan-${plan.client.name.replace(/\s+/g, "-").toLowerCase()}.pdf`
-      : `grocery-list-${plan.client.name.replace(/\s+/g, "-").toLowerCase()}.pdf`;
+  const filename = type === "mealplan"
+    ? `meal-plan-${plan.client_name.replace(/\s+/g, "-").toLowerCase()}.pdf`
+    : `grocery-list-${plan.client_name.replace(/\s+/g, "-").toLowerCase()}.pdf`;
 
   return new Response(pdfBytes, {
-    headers: {
-      "Content-Type": "application/pdf",
-      "Content-Disposition": `attachment; filename="${filename}"`,
-    },
-  });
-}
-
-type FoodData = {
-  name: string;
-  category: string;
-  unit: string;
-  store: string | null;
-  caloriesPer100g: number;
-  proteinPer100g: number;
-  carbsPer100g: number;
-  fatPer100g: number;
-  pricePerKg: number;
-};
-
-type MealFoodData = {
-  id: string;
-  food: FoodData;
-  quantity: number;
-};
-
-type MealData = {
-  id: string;
-  dayOfWeek: number;
-  mealType: string;
-  name: string;
-  foods: MealFoodData[];
-};
-
-type GroceryItemData = {
-  id: string;
-  food: FoodData;
-  quantityKg: number;
-  cost: number;
-};
-
-type PlanWithRelations = {
-  id: string;
-  clientId: string;
-  weekStart: Date;
-  dailyCalories: number;
-  dailyProtein: number;
-  dailyCarbs: number;
-  dailyFat: number;
-  client: { name: string };
-  meals: MealData[];
-  groceryList: {
-    budgetZAR: number;
-    totalCost: number;
-    items: GroceryItemData[];
-  } | null;
-};
-
-function generateMealPlanPDF(doc: jsPDF, plan: PlanWithRelations) {
-  // Header
-  doc.setFontSize(20);
-  doc.setTextColor(5, 150, 105);
-  doc.text("NutriPlan SA", 14, 20);
-
-  doc.setFontSize(16);
-  doc.setTextColor(30, 30, 30);
-  doc.text(`Weekly Meal Plan - ${plan.client.name}`, 14, 32);
-
-  doc.setFontSize(10);
-  doc.setTextColor(100, 100, 100);
-  doc.text(
-    `Week of ${plan.weekStart.toLocaleDateString("en-ZA", { day: "numeric", month: "long", year: "numeric" })}`,
-    14,
-    40
-  );
-
-  // Macro targets
-  doc.setFontSize(11);
-  doc.setTextColor(30, 30, 30);
-  doc.text(
-    `Daily Targets: ${plan.dailyCalories} kcal | Protein: ${plan.dailyProtein}g | Carbs: ${plan.dailyCarbs}g | Fat: ${plan.dailyFat}g`,
-    14,
-    50
-  );
-
-  // Build table data for each day
-  let startY = 58;
-  for (let day = 1; day <= 7; day++) {
-    const dayMeals = plan.meals
-      .filter((m) => m.dayOfWeek === day)
-      .sort(
-        (a, b) =>
-          MEAL_ORDER.indexOf(a.mealType) - MEAL_ORDER.indexOf(b.mealType)
-      );
-
-    if (dayMeals.length === 0) continue;
-
-    const tableData = dayMeals.map((meal) => {
-      const foodList = meal.foods
-        .map(
-          (mf) =>
-            `${mf.food.name} (${Math.round(mf.quantity)}g)`
-        )
-        .join(", ");
-      const cals = meal.foods.reduce(
-        (sum, mf) => sum + (mf.food.caloriesPer100g * mf.quantity) / 100,
-        0
-      );
-      return [
-        MEAL_LABELS[meal.mealType] || meal.mealType,
-        meal.name,
-        foodList,
-        `${Math.round(cals)}`,
-      ];
-    });
-
-    // Check if we need a new page
-    if (startY > 250) {
-      doc.addPage();
-      startY = 20;
-    }
-
-    doc.setFontSize(12);
-    doc.setTextColor(5, 150, 105);
-    doc.text(DAY_NAMES[day - 1], 14, startY);
-    startY += 2;
-
-    autoTable(doc, {
-      startY,
-      head: [["Meal", "Description", "Foods", "kcal"]],
-      body: tableData,
-      theme: "grid",
-      headStyles: { fillColor: [5, 150, 105], fontSize: 8 },
-      bodyStyles: { fontSize: 7 },
-      columnStyles: {
-        0: { cellWidth: 25 },
-        1: { cellWidth: 35 },
-        2: { cellWidth: 100 },
-        3: { cellWidth: 18 },
-      },
-      margin: { left: 14 },
-    });
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    startY = (doc as any).lastAutoTable.finalY + 8;
-  }
-}
-
-function generateGroceryPDF(doc: jsPDF, plan: PlanWithRelations) {
-  if (!plan.groceryList) return;
-
-  // Header
-  doc.setFontSize(20);
-  doc.setTextColor(5, 150, 105);
-  doc.text("NutriPlan SA", 14, 20);
-
-  doc.setFontSize(16);
-  doc.setTextColor(30, 30, 30);
-  doc.text(`Grocery List - ${plan.client.name}`, 14, 32);
-
-  doc.setFontSize(10);
-  doc.setTextColor(100, 100, 100);
-  doc.text(
-    `Week of ${plan.weekStart.toLocaleDateString("en-ZA", { day: "numeric", month: "long", year: "numeric" })}`,
-    14,
-    40
-  );
-
-  doc.setFontSize(11);
-  doc.setTextColor(30, 30, 30);
-  doc.text(
-    `Budget: R${plan.groceryList.budgetZAR.toFixed(0)} | Total: R${plan.groceryList.totalCost.toFixed(2)} | ${plan.groceryList.budgetZAR >= plan.groceryList.totalCost ? "Under" : "Over"} Budget: R${Math.abs(plan.groceryList.budgetZAR - plan.groceryList.totalCost).toFixed(2)}`,
-    14,
-    50
-  );
-
-  // Group items by category
-  const grouped = new Map<
-    string,
-    typeof plan.groceryList.items
-  >();
-  for (const item of plan.groceryList.items) {
-    const cat = item.food.category;
-    const group = grouped.get(cat) || [];
-    group.push(item);
-    grouped.set(cat, group);
-  }
-
-  const tableData: (string | number)[][] = [];
-  for (const [category, items] of grouped) {
-    tableData.push([
-      {
-        content: CATEGORY_LABELS[category] || category,
-        colSpan: 4,
-        styles: { fontStyle: "bold", fillColor: [240, 240, 240] },
-      } as unknown as string,
-      "",
-      "",
-      "",
-    ]);
-    for (const item of items) {
-      const qty =
-        item.quantityKg >= 1
-          ? `${item.quantityKg.toFixed(1)} ${item.food.unit}`
-          : `${Math.round(item.quantityKg * 1000)}g`;
-      tableData.push([
-        item.food.name,
-        item.food.store || "",
-        qty,
-        `R${item.cost.toFixed(2)}`,
-      ]);
-    }
-  }
-
-  // Total row
-  tableData.push([
-    {
-      content: "TOTAL",
-      colSpan: 3,
-      styles: { fontStyle: "bold" },
-    } as unknown as string,
-    "",
-    "",
-    `R${plan.groceryList.totalCost.toFixed(2)}`,
-  ]);
-
-  autoTable(doc, {
-    startY: 58,
-    head: [["Item", "Store", "Quantity", "Cost"]],
-    body: tableData,
-    theme: "grid",
-    headStyles: { fillColor: [5, 150, 105], fontSize: 9 },
-    bodyStyles: { fontSize: 8 },
-    columnStyles: {
-      0: { cellWidth: 65 },
-      1: { cellWidth: 35 },
-      2: { cellWidth: 35 },
-      3: { cellWidth: 30 },
-    },
-    margin: { left: 14 },
+    headers: { "Content-Type": "application/pdf", "Content-Disposition": `attachment; filename="${filename}"` },
   });
 }

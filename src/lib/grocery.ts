@@ -28,11 +28,41 @@ export interface GrocerySelection {
   calories: number;
 }
 
+/**
+ * Value score: how much of the needed macro you get per Rand spent.
+ */
+function macroValueScore(food: FoodRow, macro: "protein" | "carbs" | "fat"): number {
+  const per100 = macro === "protein" ? food.protein_per_100g
+    : macro === "carbs" ? food.carbs_per_100g
+    : food.fat_per_100g;
+  // grams of macro per Rand (per100 * 10 = per kg, divided by price)
+  return (per100 * 10) / food.price_per_kg;
+}
+
+/**
+ * Round quantity to realistic purchase amounts.
+ */
+function roundQuantity(kg: number): number {
+  if (kg < 0.15) return 0.15;
+  if (kg < 0.5) return Math.round(kg * 4) / 4; // round to nearest 250g
+  return Math.round(kg * 2) / 2; // round to nearest 500g
+}
+
+function calcNutrition(food: FoodRow, kg: number) {
+  const grams = kg * 1000;
+  return {
+    proteinG: Math.round((food.protein_per_100g / 100) * grams),
+    carbsG: Math.round((food.carbs_per_100g / 100) * grams),
+    fatG: Math.round((food.fat_per_100g / 100) * grams),
+    calories: Math.round((food.calories_per_100g / 100) * grams),
+  };
+}
+
 export async function buildGroceryList(
   macros: MacroTargets,
   budgetZAR: number
 ): Promise<{ items: GrocerySelection[]; totalCost: number }> {
-  const weeklyMacros = {
+  const weekly = {
     proteinG: macros.proteinG * 7,
     carbsG: macros.carbsG * 7,
     fatG: macros.fatG * 7,
@@ -44,94 +74,130 @@ export async function buildGroceryList(
 
   const items: GrocerySelection[] = [];
   let totalCost = 0;
-  let remainingProtein = weeklyMacros.proteinG;
-  let remainingCarbs = weeklyMacros.carbsG;
-  let remainingFat = weeklyMacros.fatG;
-  let remainingBudget = budgetZAR;
+  let remaining = { protein: weekly.proteinG, carbs: weekly.carbsG, fat: weekly.fatG };
+  let budget = budgetZAR;
 
-  function addFood(food: FoodRow, quantityKg: number) {
+  // Budget allocation: 45% protein, 20% carbs, 10% fat, 15% veg/fruit, 10% flex
+  const budgetSplit = {
+    protein: budgetZAR * 0.45,
+    carbs: budgetZAR * 0.20,
+    fat: budgetZAR * 0.10,
+    veg: budgetZAR * 0.15,
+    flex: budgetZAR * 0.10,
+  };
+
+  function addFood(food: FoodRow, quantityKg: number): boolean {
+    quantityKg = roundQuantity(quantityKg);
     const cost = food.price_per_kg * quantityKg;
-    if (cost > remainingBudget) {
-      quantityKg = remainingBudget / food.price_per_kg;
-      if (quantityKg < 0.1) return false;
-    }
-    const actualCost = food.price_per_kg * quantityKg;
-    const proteinG = (food.protein_per_100g / 100) * quantityKg * 1000;
-    const carbsG = (food.carbs_per_100g / 100) * quantityKg * 1000;
-    const fatG = (food.fat_per_100g / 100) * quantityKg * 1000;
-    const calories = (food.calories_per_100g / 100) * quantityKg * 1000;
+    if (cost > budget || cost < 1) return false;
+
+    const nutrition = calcNutrition(food, quantityKg);
 
     items.push({
       foodId: food.id,
       name: food.name,
       category: food.category,
-      quantityKg: Math.round(quantityKg * 100) / 100,
-      cost: Math.round(actualCost * 100) / 100,
-      proteinG: Math.round(proteinG),
-      carbsG: Math.round(carbsG),
-      fatG: Math.round(fatG),
-      calories: Math.round(calories),
+      quantityKg,
+      cost: Math.round(cost * 100) / 100,
+      ...nutrition,
     });
 
-    totalCost += actualCost;
-    remainingBudget -= actualCost;
-    remainingProtein -= proteinG;
-    remainingCarbs -= carbsG;
-    remainingFat -= fatG;
+    totalCost += cost;
+    budget -= cost;
+    remaining.protein -= nutrition.proteinG;
+    remaining.carbs -= nutrition.carbsG;
+    remaining.fat -= nutrition.fatG;
     return true;
   }
 
-  // Phase 1: Fill protein
+  // Phase 1: Protein — pick top 3-4 best value affordable proteins for variety
   const proteinFoods = foods
     .filter((f) => f.category === "protein" && f.is_affordable)
-    .sort((a, b) => (b.protein_per_100g / b.price_per_kg) - (a.protein_per_100g / a.price_per_kg));
+    .sort((a, b) => macroValueScore(b, "protein") - macroValueScore(a, "protein"));
 
-  for (const food of proteinFoods) {
-    if (remainingProtein <= 0) break;
-    const neededKg = remainingProtein / (food.protein_per_100g * 10);
-    const quantityKg = Math.min(neededKg, 3);
-    addFood(food, Math.max(0.5, quantityKg));
+  const proteinPicks = proteinFoods.slice(0, Math.min(4, proteinFoods.length));
+  const proteinPerItem = remaining.protein / proteinPicks.length;
+
+  for (const food of proteinPicks) {
+    if (remaining.protein <= 0) break;
+    const neededKg = proteinPerItem / (food.protein_per_100g * 10);
+    const maxByBudget = budgetSplit.protein / food.price_per_kg / proteinPicks.length;
+    const qty = Math.min(neededKg, maxByBudget, 3);
+    addFood(food, qty);
   }
 
-  // Phase 2: Fill carbs
+  // Phase 2: Carbs — pick top 3 for variety
   const carbFoods = foods
     .filter((f) => f.category === "carb" && f.is_affordable)
-    .sort((a, b) => (b.carbs_per_100g / b.price_per_kg) - (a.carbs_per_100g / a.price_per_kg));
+    .sort((a, b) => macroValueScore(b, "carbs") - macroValueScore(a, "carbs"));
 
-  for (const food of carbFoods) {
-    if (remainingCarbs <= 0) break;
-    const neededKg = remainingCarbs / (food.carbs_per_100g * 10);
-    const quantityKg = Math.min(neededKg, 5);
-    addFood(food, Math.max(0.5, quantityKg));
+  const carbPicks = carbFoods.slice(0, Math.min(3, carbFoods.length));
+  const carbsPerItem = remaining.carbs / carbPicks.length;
+
+  for (const food of carbPicks) {
+    if (remaining.carbs <= 0) break;
+    const neededKg = carbsPerItem / (food.carbs_per_100g * 10);
+    const maxByBudget = budgetSplit.carbs / food.price_per_kg / carbPicks.length;
+    const qty = Math.min(neededKg, maxByBudget, 4);
+    addFood(food, qty);
   }
 
-  // Phase 3: Fill fat
+  // Phase 3: Fats — pick 2
   const fatFoods = foods
     .filter((f) => f.category === "fat" && f.is_affordable)
-    .sort((a, b) => (b.fat_per_100g / b.price_per_kg) - (a.fat_per_100g / a.price_per_kg));
+    .sort((a, b) => macroValueScore(b, "fat") - macroValueScore(a, "fat"));
 
-  for (const food of fatFoods) {
-    if (remainingFat <= 0) break;
-    const neededKg = remainingFat / (food.fat_per_100g * 10);
-    const quantityKg = Math.min(neededKg, 2);
-    addFood(food, Math.max(0.25, quantityKg));
+  for (const food of fatFoods.slice(0, 2)) {
+    if (remaining.fat <= 0) break;
+    const neededKg = (remaining.fat / 2) / (food.fat_per_100g * 10);
+    const qty = Math.min(neededKg, 1);
+    addFood(food, qty);
   }
 
-  // Phase 4: Vegetables and fruit
+  // Phase 4: Vegetables — pick 3-4 affordable vegs
   const vegFoods = foods
-    .filter((f) => (f.category === "vegetable" || f.category === "fruit") && f.is_affordable)
+    .filter((f) => f.category === "vegetable" && f.is_affordable)
     .sort((a, b) => a.price_per_kg - b.price_per_kg);
 
-  for (const food of vegFoods.slice(0, 5)) {
-    if (remainingBudget < 10) break;
-    addFood(food, 1);
+  for (const food of vegFoods.slice(0, 4)) {
+    if (budget < 10) break;
+    addFood(food, 0.75);
   }
 
-  // Phase 5: Premium items if budget remains
-  if (remainingBudget > 50) {
+  // Phase 5: Fruit — 1-2 affordable fruits
+  const fruitFoods = foods
+    .filter((f) => f.category === "fruit" && f.is_affordable)
+    .sort((a, b) => a.price_per_kg - b.price_per_kg);
+
+  for (const food of fruitFoods.slice(0, 2)) {
+    if (budget < 8) break;
+    addFood(food, 0.75);
+  }
+
+  // Phase 6: Dairy — 1 item if budget allows
+  const dairyFoods = foods
+    .filter((f) => f.category === "dairy" && f.is_affordable)
+    .sort((a, b) => a.price_per_kg - b.price_per_kg);
+
+  if (dairyFoods.length > 0 && budget > 15) {
+    addFood(dairyFoods[0], 1);
+  }
+
+  // Phase 7: Pantry staples — 1-2 tinned items
+  const pantryFoods = foods
+    .filter((f) => f.category === "pantry")
+    .sort((a, b) => a.price_per_kg - b.price_per_kg);
+
+  for (const food of pantryFoods.slice(0, 2)) {
+    if (budget < 15) break;
+    addFood(food, 0.5);
+  }
+
+  // Phase 8: Premium items if >R60 left
+  if (budget > 60) {
     const premiumFoods = foods.filter((f) => f.is_premium);
-    for (const food of premiumFoods.slice(0, 3)) {
-      if (remainingBudget < 30) break;
+    for (const food of premiumFoods.slice(0, 2)) {
+      if (budget < 40) break;
       addFood(food, 0.5);
     }
   }

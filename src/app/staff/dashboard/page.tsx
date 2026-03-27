@@ -55,6 +55,12 @@ export default async function StaffDashboardPage() {
         </div>
         <div className="flex items-center gap-3">
           <Link
+            href="/staff/foods"
+            className="px-4 py-2 border border-emerald-600 text-emerald-600 rounded-lg hover:bg-emerald-50 transition-colors font-medium"
+          >
+            Food Prices
+          </Link>
+          <Link
             href="/clients/new"
             className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors font-medium"
           >

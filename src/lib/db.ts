@@ -83,11 +83,16 @@ export async function initDb() {
   if (globalForPg.dbInitialized) return;
 
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS staff_members (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'staff',
+      pin TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
     CREATE TABLE IF NOT EXISTS clients (
       id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT, age INTEGER NOT NULL,
       gender TEXT NOT NULL, weight_kg DOUBLE PRECISION NOT NULL, height_cm DOUBLE PRECISION NOT NULL,
       body_fat_pct DOUBLE PRECISION, activity_level TEXT NOT NULL, goal TEXT NOT NULL,
-      budget_zar DOUBLE PRECISION NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      budget_zar DOUBLE PRECISION NOT NULL, staff_id TEXT REFERENCES staff_members(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE TABLE IF NOT EXISTS foods (
@@ -122,6 +127,31 @@ export async function initDb() {
       food_id TEXT NOT NULL REFERENCES foods(id), quantity DOUBLE PRECISION NOT NULL
     );
   `);
+
+  // Add staff_id column to clients if it doesn't exist (safe migration)
+  await pool.query(`
+    DO $$ BEGIN
+      ALTER TABLE clients ADD COLUMN staff_id TEXT REFERENCES staff_members(id) ON DELETE SET NULL;
+    EXCEPTION WHEN duplicate_column THEN NULL;
+    END $$;
+  `);
+
+  // Auto-seed staff members if table is empty
+  const staffCount = await pool.query("SELECT COUNT(*) as count FROM staff_members");
+  if (parseInt(staffCount.rows[0].count) === 0) {
+    const staffSeed = [
+      { name: "Taylin", role: "staff", pin: "4729" },
+      { name: "Sergio", role: "staff", pin: "8156" },
+      { name: "Admin", role: "admin", pin: "1313" },
+    ];
+    for (const s of staffSeed) {
+      await pool.query(
+        "INSERT INTO staff_members (id, name, role, pin) VALUES ($1,$2,$3,$4)",
+        [generateId(), s.name, s.role, s.pin]
+      );
+    }
+    console.log("Auto-seeded 3 staff/admin profiles.");
+  }
 
   // Auto-seed foods if table is empty
   const foodCount = await pool.query("SELECT COUNT(*) as count FROM foods");

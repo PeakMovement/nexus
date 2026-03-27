@@ -30,9 +30,15 @@ export default function RootLayout({
                 </Link>
                 <Link
                   href="/clients/new"
-                  className="px-3 py-2 rounded-md text-sm font-medium bg-emerald-600 hover:bg-emerald-500 transition-colors"
+                  className="px-3 py-2 rounded-md text-sm font-medium hover:bg-emerald-600 transition-colors"
                 >
                   + New Client
+                </Link>
+                <Link
+                  href="/staff"
+                  className="px-3 py-2 rounded-md text-sm font-medium bg-emerald-600 hover:bg-emerald-500 transition-colors"
+                >
+                  Staff Portal
                 </Link>
               </div>
             </div>

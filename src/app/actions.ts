@@ -5,15 +5,20 @@ import { calculateMacros, type ClientProfile } from "@/lib/nutrition";
 import { buildGroceryList } from "@/lib/grocery";
 import { generateMealPlan } from "@/lib/mealplan";
 import { redirect } from "next/navigation";
+import { cookies } from "next/headers";
 
 export async function createClient(formData: FormData) {
   await initDb();
   const id = generateId();
   const now = new Date().toISOString();
 
+  // Auto-assign to logged-in staff if present
+  const cookieStore = await cookies();
+  const staffId = cookieStore.get("staff_id")?.value || null;
+
   await query(
-    `INSERT INTO clients (id, name, email, age, gender, weight_kg, height_cm, body_fat_pct, activity_level, goal, budget_zar, created_at, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+    `INSERT INTO clients (id, name, email, age, gender, weight_kg, height_cm, body_fat_pct, activity_level, goal, budget_zar, staff_id, created_at, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
     [
       id,
       formData.get("name") as string,
@@ -26,6 +31,7 @@ export async function createClient(formData: FormData) {
       formData.get("activityLevel") as string,
       formData.get("goal") as string,
       parseFloat(formData.get("budgetZAR") as string),
+      staffId,
       now,
       now,
     ]
